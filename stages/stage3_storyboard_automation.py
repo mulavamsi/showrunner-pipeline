@@ -219,7 +219,18 @@ def render(state: dict):
                     st.write(shot.get("framing_notes", "—"))
 
                 st.markdown("**Visual Description**")
-                st.info(shot.get("visual_description", "—"))
+                edited_vd = st.text_area(
+                    "Edit visual description",
+                    value=shot.get("visual_description", ""),
+                    height=90,
+                    key=f"vd_{key}",
+                    label_visibility="collapsed",
+                )
+                if edited_vd != shot.get("visual_description", ""):
+                    storyboard[key]["visual_description"] = edited_vd
+                    images.pop(key, None)  # clear cached image — description changed
+                    save_stage_data(project_id, 3, "storyboard", storyboard)
+                    save_stage_data(project_id, 3, "images", images)
                 st.caption(f"Emotional beat from Stage 2: *{scene.get('emotional_beat', '—')}*")
 
                 # ── Image generation ───────────────────────────────────────────
