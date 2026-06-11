@@ -8,44 +8,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# ── Open Graph meta tags (injected via JS — works with WhatsApp's headless crawler) ──
-_OG_TITLE = "Showrunner - AI Micro-Drama Pipeline"
-_OG_DESC = (
-    "From script to screen in 6 stages. Director memory, storyboard automation, "
-    "and AI-generated visuals for serialized content."
-)
-st.markdown(
-    f"""
-<script>
-(function() {{
-    var tags = [
-        ["og:title",          "{_OG_TITLE}"],
-        ["og:description",    "{_OG_DESC}"],
-        ["og:type",           "website"],
-        ["twitter:card",      "summary"],
-        ["twitter:title",     "{_OG_TITLE}"],
-        ["twitter:description", "{_OG_DESC}"],
-    ];
-    tags.forEach(function(t) {{
-        var prop = t[0], content = t[1];
-        var sel = prop.startsWith("twitter:")
-            ? 'meta[name="' + prop + '"]'
-            : 'meta[property="' + prop + '"]';
-        var el = document.querySelector(sel);
-        if (!el) {{
-            el = document.createElement("meta");
-            if (prop.startsWith("twitter:")) el.setAttribute("name", prop);
-            else el.setAttribute("property", prop);
-            document.head.appendChild(el);
-        }}
-        el.setAttribute("content", content);
-    }});
-}})();
-</script>
-""",
-    unsafe_allow_html=True,
-)
-
 # ── DB init ───────────────────────────────────────────────────────────────────
 init_db()
 
