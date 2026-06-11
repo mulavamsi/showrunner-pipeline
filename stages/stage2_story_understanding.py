@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -129,7 +130,11 @@ def render(state: dict):
 
     # ── Script input ──────────────────────────────────────────────────────────
     st.subheader("1. Input Script")
-    input_method = st.radio("Input method", ["Paste text", "Upload .txt file"], horizontal=True)
+    input_method = st.radio(
+        "Input method",
+        ["Paste text", "Upload .txt file", "Upload .pdf file"],
+        horizontal=True,
+    )
 
     script_text = ""
 
@@ -139,13 +144,30 @@ def render(state: dict):
             height=300,
             placeholder="INT. APARTMENT - NIGHT\n\nARAV stands at the window...",
         )
-    else:
+
+    elif input_method == "Upload .txt file":
         uploaded = st.file_uploader("Upload script (.txt)", type=["txt"])
         if uploaded:
             script_text = uploaded.read().decode("utf-8", errors="replace")
             st.success(f"Loaded: {uploaded.name} ({len(script_text):,} chars)")
             with st.expander("Preview uploaded script"):
                 st.text(script_text[:1000] + ("..." if len(script_text) > 1000 else ""))
+
+    else:  # PDF
+        uploaded = st.file_uploader("Upload script (.pdf)", type=["pdf"])
+        if uploaded:
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(io.BytesIO(uploaded.read()))
+                pages_text = [page.extract_text() or "" for page in reader.pages]
+                script_text = "\n".join(pages_text).strip()
+                st.success(f"Loaded: {uploaded.name} — {len(reader.pages)} page(s), {len(script_text):,} chars extracted")
+                with st.expander("Preview extracted text"):
+                    st.text(script_text[:1000] + ("..." if len(script_text) > 1000 else ""))
+                if not script_text:
+                    st.warning("No text extracted — the PDF may be image-based (scanned). Try a text-based PDF or paste the script manually.")
+            except Exception as e:
+                st.error(f"PDF read failed: {e}")
 
     # ── Extract button ────────────────────────────────────────────────────────
     st.subheader("2. Extract Scene Breakdown")

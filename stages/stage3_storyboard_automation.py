@@ -4,21 +4,32 @@ import json
 import os
 import re
 import anthropic
+import fal_client
 import streamlit as st
 from dotenv import load_dotenv
 from memory.database import save_stage_data, load_stage_data, get_project
-from config.settings import STORYBOARD_PROMPT, STORYBOARD_MODEL
+from config.settings import (
+    STORYBOARD_PROMPT, STORYBOARD_MODEL,
+    IMAGE_GEN_MODEL, IMAGE_GEN_PROMPT_TEMPLATE,
+)
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
+# Fal.ai picks up FAL_KEY from environment automatically
+_fal_key = (
+    st.secrets.get("FAL_KEY", "")
+    if hasattr(st, "secrets")
+    else os.environ.get("FAL_KEY", "")
+)
+if _fal_key:
+    os.environ["FAL_KEY"] = _fal_key
 
-# ── Claude call (per scene) ────────────────────────────────────────────────────
+
+# ── Claude storyboard call ────────────────────────────────────────────────────
 
 def _parse_shot_response(raw: str) -> dict:
-    """Parse Claude's response, falling back to regex extraction if JSON is truncated."""
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
-
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
@@ -28,7 +39,6 @@ def _parse_shot_response(raw: str) -> dict:
         def _extract(field: str) -> str:
             m = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
             return m.group(1) if m else ""
-
         return {
             "shot_type": _extract("shot_type"),
             "camera_angle": _extract("camera_angle"),
@@ -50,15 +60,43 @@ def _generate_shot(scene: dict, project: dict) -> dict:
         emotional_beat=scene.get("emotional_beat", ""),
         summary=scene.get("summary", ""),
     )
-
     client = anthropic.Anthropic()
     msg = client.messages.create(
         model=STORYBOARD_MODEL,
         max_tokens=600,
         messages=[{"role": "user", "content": prompt}],
     )
-    raw = msg.content[0].text.strip()
-    return _parse_shot_response(raw)
+    return _parse_shot_response(msg.content[0].text.strip())
+
+
+# ── Fal.ai image generation ───────────────────────────────────────────────────
+
+def _build_image_prompt(shot: dict, project: dict) -> str:
+    return IMAGE_GEN_PROMPT_TEMPLATE.format(
+        visual_description=shot.get("visual_description", "").strip(),
+        shot_type=shot.get("shot_type", "medium").strip(),
+        camera_angle=shot.get("camera_angle", "eye-level").strip(),
+        framing_notes=shot.get("framing_notes", "").strip(),
+        color_palette=project.get("color_palette") or "natural",
+        mood=project.get("mood") or "neutral",
+        director_style=project.get("director_style") or "cinematic",
+    )
+
+
+def _generate_image(shot: dict, project: dict) -> str:
+    """Call Fal.ai Flux and return the image URL."""
+    image_prompt = _build_image_prompt(shot, project)
+    result = fal_client.subscribe(
+        IMAGE_GEN_MODEL,
+        arguments={
+            "prompt": image_prompt,
+            "image_size": "landscape_16_9",
+            "num_inference_steps": 4,
+            "num_images": 1,
+            "enable_safety_checker": True,
+        },
+    )
+    return result["images"][0]["url"], image_prompt
 
 
 # ── Main render ───────────────────────────────────────────────────────────────
@@ -67,7 +105,7 @@ def render(state: dict):
     st.header("Stage 3 — Storyboard Automation")
     st.caption(
         "Claude generates shot type, camera angle, framing, and visual description "
-        "for each scene — informed by the director's style and each scene's emotional beat."
+        "for each scene. Generate a reference image per scene using Fal.ai / Flux."
     )
 
     project_id = state.get("project_id")
@@ -90,7 +128,7 @@ def render(state: dict):
 
     st.info(f"Active project: **{project['show_name']}** — {len(breakdown)} scene(s) from Stage 2")
 
-    # ── Director context summary ───────────────────────────────────────────────
+    # ── Director context ───────────────────────────────────────────────────────
     with st.expander("Director grammar being used in this storyboard"):
         c1, c2 = st.columns(2)
         c1.markdown(f"**Style:** {project.get('director_style') or '—'}")
@@ -99,11 +137,12 @@ def render(state: dict):
         c2.markdown(f"**Visual Refs:** {project.get('visual_references') or '—'}")
         c2.markdown(f"**Color Palette:** {project.get('color_palette') or '—'}")
 
-    # ── Load existing storyboard + approvals ───────────────────────────────────
+    # ── Load persisted data ────────────────────────────────────────────────────
     storyboard = load_stage_data(project_id, 3, "storyboard") or {}
     approvals = load_stage_data(project_id, 3, "approvals") or {}
+    images = load_stage_data(project_id, 3, "images") or {}  # {scene_key: {url, prompt}}
 
-    # ── Generate all / regenerate controls ────────────────────────────────────
+    # ── Generate all / clear controls ─────────────────────────────────────────
     st.subheader("Generate Storyboard")
     col_gen, col_regen = st.columns([2, 1])
 
@@ -120,7 +159,6 @@ def render(state: dict):
                     errors.append(f"Scene {scene['scene_number']}: {e}")
                     storyboard[key] = {"error": str(e)}
                 progress.progress((i + 1) / len(breakdown), text=f"Scene {scene['scene_number']} done")
-
             save_stage_data(project_id, 3, "storyboard", storyboard)
             progress.empty()
             if errors:
@@ -133,16 +171,16 @@ def render(state: dict):
         if storyboard and st.button("Clear & Regenerate"):
             save_stage_data(project_id, 3, "storyboard", {})
             save_stage_data(project_id, 3, "approvals", {})
+            save_stage_data(project_id, 3, "images", {})
             st.rerun()
 
-    # ── Scene-by-scene display + approval ─────────────────────────────────────
+    # ── Scene-by-scene display ─────────────────────────────────────────────────
     if storyboard:
         st.divider()
         st.subheader("Review & Approve")
 
         approved_count = sum(1 for s in breakdown if approvals.get(str(s["scene_number"])))
         total = len(breakdown)
-
         st.caption(f"{approved_count} of {total} scene(s) approved")
         st.progress(approved_count / total if total else 0)
 
@@ -150,10 +188,11 @@ def render(state: dict):
             key = str(scene["scene_number"])
             shot = storyboard.get(key, {})
             is_approved = approvals.get(key, False)
+            scene_image = images.get(key)
 
-            border_color = "✅" if is_approved else "⬜"
+            icon = "✅" if is_approved else "⬜"
             with st.expander(
-                f"{border_color} Scene {scene['scene_number']} — {scene['location']}",
+                f"{icon} Scene {scene['scene_number']} — {scene['location']}",
                 expanded=not is_approved,
             ):
                 if "error" in shot:
@@ -168,7 +207,7 @@ def render(state: dict):
                             st.error(str(e))
                     continue
 
-                # Storyboard fields
+                # ── Storyboard fields ──────────────────────────────────────────
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown("**Shot Type**")
@@ -181,24 +220,61 @@ def render(state: dict):
 
                 st.markdown("**Visual Description**")
                 st.info(shot.get("visual_description", "—"))
-
-                # Emotional beat reminder
                 st.caption(f"Emotional beat from Stage 2: *{scene.get('emotional_beat', '—')}*")
 
-                # Per-scene regenerate
-                if st.button(f"Regenerate this scene", key=f"regen_{key}"):
+                # ── Image generation ───────────────────────────────────────────
+                st.markdown("---")
+
+                if scene_image:
+                    st.image(
+                        scene_image["url"],
+                        caption=f"Generated with Flux — Scene {scene['scene_number']}",
+                        use_container_width=True,
+                    )
+                    with st.expander("View image prompt"):
+                        st.code(scene_image["prompt"], language=None)
+                    img_col1, img_col2 = st.columns(2)
+                    with img_col1:
+                        if st.button("Regenerate Image", key=f"regen_img_{key}"):
+                            with st.spinner("Calling Fal.ai / Flux…"):
+                                try:
+                                    url, prompt = _generate_image(shot, project)
+                                    images[key] = {"url": url, "prompt": prompt}
+                                    save_stage_data(project_id, 3, "images", images)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Image generation failed: {e}")
+                else:
+                    fal_available = bool(os.environ.get("FAL_KEY"))
+                    if fal_available:
+                        if st.button("Generate Image ✦", key=f"gen_img_{key}", type="primary"):
+                            with st.spinner("Calling Fal.ai / Flux… (~5-10s)"):
+                                try:
+                                    url, prompt = _generate_image(shot, project)
+                                    images[key] = {"url": url, "prompt": prompt}
+                                    save_stage_data(project_id, 3, "images", images)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Image generation failed: {e}")
+                    else:
+                        st.caption("⚠️ FAL_KEY not set — add it to .env or Streamlit secrets to enable image generation.")
+
+                # ── Per-scene storyboard regenerate ───────────────────────────
+                if st.button("Regenerate Storyboard", key=f"regen_{key}"):
                     with st.spinner("Calling Claude…"):
                         try:
                             shot = _generate_shot(scene, project)
                             storyboard[key] = shot
                             approvals[key] = False
+                            images.pop(key, None)
                             save_stage_data(project_id, 3, "storyboard", storyboard)
                             save_stage_data(project_id, 3, "approvals", approvals)
+                            save_stage_data(project_id, 3, "images", images)
                             st.rerun()
                         except Exception as e:
                             st.error(str(e))
 
-                # Approval checkbox
+                # ── Approval checkbox ──────────────────────────────────────────
                 new_approval = st.checkbox(
                     "Approve this scene",
                     value=is_approved,
@@ -218,9 +294,7 @@ def render(state: dict):
         ]
 
         if not all_approved:
-            st.warning(
-                f"Approve all scenes before proceeding. Pending: {', '.join(unapproved)}"
-            )
+            st.warning(f"Approve all scenes before proceeding. Pending: {', '.join(unapproved)}")
         else:
             st.success("All scenes approved. Ready for Stage 4.")
             if st.button("Proceed to Stage 4 — Video Generation →", type="primary"):

@@ -57,6 +57,11 @@ STORYBOARD_MODEL = "claude-haiku-4-5-20251001"
 # ── Stage 4: Video Generation ─────────────────────────────────────────────────
 VIDEO_GEN_PROMPT_TEMPLATE = """{visual_description} {shot_type} shot, {camera_angle}. {framing_notes} Color palette: {color_palette}. Mood: {mood}. Tone: {tone}. Director style: {director_style}. Emotional register: {emotional_beat}. Cinematic, high production value, no text or subtitles. Duration: 5 seconds."""
 
+# ── Stage 3: Image Generation (Fal.ai / Flux) ─────────────────────────────────
+IMAGE_GEN_MODEL = "fal-ai/flux/schnell"
+
+IMAGE_GEN_PROMPT_TEMPLATE = """{visual_description} {shot_type} shot, {camera_angle} angle. {framing_notes} Color palette: {color_palette}. Mood: {mood}. Cinematic still frame, high production value, no text, no subtitles, no watermarks. Shot in the style of {director_style}."""
+
 # ── Stage 6: Audio + Lip Sync ──────────────────────────────────────────────────
 VOICE_CLONE_INSTRUCTION_TEMPLATE = """
 [VOICE CLONE INSTRUCTION — Scene {scene_number}]
